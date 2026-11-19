@@ -125,9 +125,28 @@ export async function entrar(email, senha) {
 }
 
 export async function criarConta(email, senha) {
-  const data = await http('/auth/v1/signup', { method: 'POST', token: false, body: { email, password: senha } });
+  const volta = encodeURIComponent(location.origin + location.pathname);
+  const data = await http('/auth/v1/signup?redirect_to=' + volta, { method: 'POST', token: false, body: { email, password: senha } });
   if (data && data.access_token) { await guardarAuth(data); return { confirmar: false }; }
   return { confirmar: true };
+}
+
+/** Ao voltar do link de confirmação do e-mail, o Supabase devolve a sessão no endereço (#access_token=…). */
+export async function sessaoDoLink() {
+  const h = location.hash.replace(/^#/, '');
+  if (!/(^|&)(access_token|error)=/.test(h)) return null;
+  const p = new URLSearchParams(h);
+  history.replaceState(null, '', location.pathname + location.search + '#/cadastro?s=nuvem');
+  if (p.get('error')) return { ok: false, msg: p.get('error_description') || 'O link de confirmação expirou. Peça um novo criando a conta de novo ou entre com sua senha.' };
+  if (!conn.url || !conn.key) return null;
+  try {
+    const user = await fetch(conn.url + '/auth/v1/user', { headers: { apikey: conn.key, Authorization: 'Bearer ' + p.get('access_token') } }).then((r) => r.json());
+    await guardarAuth({ access_token: p.get('access_token'), refresh_token: p.get('refresh_token'), expires_in: Number(p.get('expires_in')) || 3600, user });
+    await db.setKV('ultimo_pull', null);
+    return { ok: true, msg: 'E-mail confirmado. Você está conectado.' };
+  } catch (e) {
+    return { ok: false, msg: 'E-mail confirmado. Toque em Entrar para conectar.' };
+  }
 }
 
 export async function sair() {

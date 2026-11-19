@@ -750,7 +750,8 @@ function secaoNuvem() {
 
 /* ---------- roteamento e render ---------- */
 function lerRota() {
-  const h = location.hash.replace(/^#/, '') || '/';
+  let h = location.hash.replace(/^#/, '') || '/';
+  if (!h.startsWith('/')) h = '/';
   const [path, qs] = h.split('?');
   S.rota = path;
   S.q = Object.fromEntries(new URLSearchParams(qs || ''));
@@ -1040,7 +1041,10 @@ function registrarSW() {
     if (nuvem && !nuvem.contains(document.activeElement)) nuvem.outerHTML = secaoNuvem();
   });
   await sync.iniciar();
+  const link = await sync.sessaoDoLink();
+  if (link) { lerRota(); ultimaRota = S.rota; S.nuvemMsg = { ok: link.ok, txt: link.msg }; }
   render();
+  if (link) document.getElementById('nuvem')?.scrollIntoView({ block: 'start' });
   registrarSW();
   sync.sincronizar();
 })();
