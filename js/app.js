@@ -13,6 +13,11 @@ const S = {
   calSel: null,
   aviso: null,
   confirmarRemocao: null,
+  adminAte: 0,
+  pedirSenha: false,
+  adminMsg: null,
+  editando: null,
+  confirmarLimpeza: false,
   form: {},
   nuvemMsg: null,
   ocupado: false,
@@ -43,6 +48,8 @@ const ICON = {
   mais: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   fechar: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   sol: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  cadeado: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  cadeadoAberto: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>',
   lua: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>'
 };
 
@@ -170,6 +177,51 @@ async function removerRegistro(id) {
   await db.put('registros', r);
   await sync.contarPendentes();
   sync.sincronizar();
+}
+
+/* ---------- administrador ---------- */
+const ADMIN_MINUTOS = 10;
+const adminAtivo = () => Date.now() < S.adminAte;
+const b64 = (u8) => btoa(String.fromCharCode(...u8));
+async function hashSenha(senha, saltB64) {
+  const salt = saltB64 ? Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0)) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(senha), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, key, 256);
+  return { hash: b64(new Uint8Array(bits)), salt: b64(salt) };
+}
+async function conferirSenha(senha) {
+  if (!S.cfg.adminHash || !senha) return false;
+  return (await hashSenha(senha, S.cfg.adminSalt)).hash === S.cfg.adminHash;
+}
+function desbloquearAdmin() {
+  S.adminAte = Date.now() + ADMIN_MINUTOS * 60000;
+  S.pedirSenha = false;
+  S.adminMsg = null;
+  clearTimeout(desbloquearAdmin.t);
+  desbloquearAdmin.t = setTimeout(() => { S.editando = null; S.confirmarLimpeza = false; render(); toast('Modo administrador bloqueado.'); }, ADMIN_MINUTOS * 60000 + 500);
+}
+function bloquearAdmin() { S.adminAte = 0; S.editando = null; S.confirmarRemocao = null; S.confirmarLimpeza = false; clearTimeout(desbloquearAdmin.t); }
+
+/** Botão/caixa de senha que libera a edição de registros. */
+function painelAdmin(contexto) {
+  const msg = S.adminMsg ? `<p class="msg ${S.adminMsg.ok ? 'ok' : 'erro'}" role="status">${esc(S.adminMsg.txt)}</p>` : '';
+  if (adminAtivo()) {
+    return `<div class="admin-ativo"><span>${ICON.cadeadoAberto} Modo administrador até ${C.fromMin(new Date(S.adminAte).getHours() * 60 + new Date(S.adminAte).getMinutes())}</span><button type="button" class="link-btn" data-action="bloquear-admin">Bloquear</button></div>`;
+  }
+  if (!S.cfg.adminHash) {
+    return contexto === 'cal'
+      ? `<a class="btn sec peq" href="#/cadastro?s=admin">${ICON.cadeado} Definir senha de administrador</a>`
+      : '';
+  }
+  if (!S.pedirSenha) return `<button type="button" class="btn sec peq" data-action="pedir-admin">${ICON.cadeado} Alterar registros (administrador)</button>${msg}`;
+  return `<form data-form="admin" class="admin-form" novalidate>
+      <label class="campo">Senha de administrador<input type="password" name="senha" autocomplete="off" required></label>
+      ${msg}
+      <div class="duas">
+        <button type="button" class="btn sec peq" data-action="cancelar-admin">Cancelar</button>
+        <button type="submit" class="btn peq" ${S.ocupado ? 'disabled' : ''}>Desbloquear</button>
+      </div>
+    </form>`;
 }
 
 /* ---------- componentes ---------- */
@@ -342,19 +394,32 @@ function telaCalendario() {
   } else {
     det += `<span class="t">${di.marcas.length ? 'Trabalhado: ' + C.hm(di.trab) : 'Descanso semanal'}</span><span class="x">Sem jornada prevista neste dia.</span>`;
   }
+  const admin = adminAtivo();
   if (di.marcas.length) {
     det += '<ul class="marcas">' + di.marcas.map((m, i) => {
-      const flags = [m.manual && 'manual', m.offline && 'offline', pendIds.has(m.id) && 'pendente'].filter(Boolean).join(' · ');
+      const flags = [m.manual && 'ajustada', m.offline && 'offline', pendIds.has(m.id) && 'pendente'].filter(Boolean).join(' · ');
+      if (admin && S.editando === m.id) {
+        return `<li><form data-form="editar" style="display:flex;gap:8px;align-items:center;width:100%">
+          <label class="sr-only" for="ed-${m.id}">Novo horário</label>
+          <input id="ed-${m.id}" class="input num" type="time" name="hora" value="${C.horaDe(m.ts)}" required style="height:44px;flex:1">
+          <button type="button" class="link-btn" style="color:var(--muted)" data-action="cancelar-edicao">Cancelar</button>
+          <button type="submit" class="btn peq" style="width:auto;padding:0 14px;height:44px">Salvar</button>
+        </form></li>`;
+      }
       const conf = S.confirmarRemocao === m.id;
-      return `<li><span class="num" style="font-weight:600">${C.horaDe(m.ts)}</span><span class="tp">${C.tipoPorOrdem(i)}${flags ? ` <span class="flag">· ${flags}</span>` : ''}</span><button type="button" class="link-btn" data-action="remover-reg" data-id="${m.id}">${conf ? 'Confirmar' : 'Remover'}</button></li>`;
+      const acoes = admin
+        ? `<button type="button" class="link-btn" style="color:var(--text)" data-action="editar-reg" data-id="${m.id}">Alterar</button><button type="button" class="link-btn" data-action="remover-reg" data-id="${m.id}">${conf ? 'Confirmar' : 'Remover'}</button>`
+        : '';
+      return `<li><span class="num" style="font-weight:600">${C.horaDe(m.ts)}</span><span class="tp">${C.tipoPorOrdem(i)}${flags ? ` <span class="flag">· ${flags}</span>` : ''}</span>${acoes}</li>`;
     }).join('') + '</ul>';
   }
-  if (sel <= hoje) {
+  if (sel <= hoje && admin) {
     det += `<form data-form="manual" style="display:flex;gap:8px;align-items:flex-end">
       <label class="campo" style="flex:1">Incluir marcação esquecida<input type="time" name="hora" required></label>
       <button type="submit" class="btn peq" style="width:auto;padding:0 16px">Incluir</button>
     </form>`;
   }
+  if (sel <= hoje) det += painelAdmin('cal');
   const proprio = di.fer.find((f) => f.origem !== 'nacional');
   det += `<a class="btn sec peq" href="#/feriado?data=${sel}${di.fer[0] ? '&id=' + encodeURIComponent(di.fer[0].id) : ''}">${di.fer.length ? 'Editar feriado' : 'Marcar este dia como feriado'}</a>`;
 
@@ -406,14 +471,14 @@ function folhaFeriado() {
     const base = existente || nac || {};
     S.form = {
       feriadoKey: id + data,
-      data: C.brDate(existente && !existente.recorrente ? existente.data : data),
+      data: existente && !existente.recorrente ? existente.data : data,
       nome: (existente && existente.nome) || (nac && nac.nome) || '',
       tipo: (existente && existente.tipo) || base.tipo || 'municipal',
       recorrente: existente ? !!existente.recorrente : nac ? true : false
     };
   }
   const F = S.form;
-  const dataIso = C.fromBrDate(F.data);
+  const dataIso = /^\d{4}-\d{2}-\d{2}$/.test(F.data) ? F.data : null;
   const dow = dataIso ? C.DIAS[C.parseYmd(dataIso).getDay()] : '—';
   const tipos = Object.entries(TIPOS_FERIADO).map(([k, t]) =>
     `<button type="button" class="tipo" role="radio" aria-checked="${F.tipo === k}" data-action="fer-tipo" data-tipo="${k}" style="color:${t.cor}"><span class="sw" style="background:${t.cor}"></span><span class="tx" style="color:var(--text)"><b>${t.nome}</b><span>${t.dica}</span></span></button>`).join('');
@@ -427,7 +492,7 @@ function folhaFeriado() {
       </div>
       <form data-form="feriado" style="display:flex;flex-direction:column;gap:18px" novalidate>
         <div class="duas">
-          <label class="campo">Data<input type="text" name="data" inputmode="numeric" placeholder="dd/mm/aaaa" value="${esc(F.data)}" ${nac ? 'readonly' : ''} data-field="fer-data"></label>
+          <label class="campo">Data<input type="date" name="data" value="${esc(F.data)}" ${nac ? 'readonly' : ''} data-field="fer-data" class="num"></label>
           <label class="campo">Dia da semana<input type="text" value="${dow}" readonly data-out="dow"></label>
         </div>
         <label class="campo">Nome do feriado<input type="text" name="nome" placeholder="Ex.: Aniversário da cidade" value="${esc(F.nome)}" data-field="fer-nome" maxlength="80"></label>
@@ -449,9 +514,9 @@ async function salvarFeriado() {
   const F = S.form;
   const id = S.q.id || '';
   const nac = id.startsWith('nac:');
-  const dataIso = C.fromBrDate(F.data);
+  const dataIso = /^\d{4}-\d{2}-\d{2}$/.test(F.data) ? F.data : null;
   const erro = document.querySelector('[data-out="fer-erro"]');
-  if (!dataIso) { erro.textContent = 'Informe a data no formato dd/mm/aaaa.'; return; }
+  if (!dataIso) { erro.textContent = 'Escolha a data do feriado.'; return; }
   if (!F.nome.trim()) { erro.textContent = 'Informe o nome do feriado.'; return; }
   const now = agora().toISOString();
   const atual = S.feriados.find((f) => f.id === id);
@@ -491,7 +556,7 @@ function telaCadastro() {
   const div = C.divisor(cfg);
   const sal = C.salarioVigente(cfg);
   const vh = sal / div;
-  if (!S.form.cadastro) S.form = { cadastro: true, modo: 'salario', valor: C.num2(sal), vigencia: C.brDate(hojeStr()) };
+  if (!S.form.cadastro) S.form = { cadastro: true, modo: 'salario', valor: C.num2(sal), vigencia: hojeStr() };
   const F = S.form;
   const iv = C.avaliarIntervalo(cfg);
   const regimes = C.REGIMES.map((r) => `<button type="button" class="opcao" role="radio" aria-checked="${cfg.regime === r.id}" data-action="regime" data-id="${r.id}"><span class="rd"></span><span class="tx"><b>${r.nome}</b><span>${r.desc}</span></span><span class="dv num">${(r.semanal || C.semanal(cfg)) * 5}h/mês</span></button>`).join('');
@@ -513,7 +578,7 @@ function telaCadastro() {
     <label class="campo">Nome completo<input type="text" value="${esc(cfg.nome)}" placeholder="Nome do colaborador" data-cfg="nome" autocomplete="name"></label>
     <div class="duas">
       <label class="campo">Cargo<input type="text" value="${esc(cfg.cargo)}" placeholder="Cargo" data-cfg="cargo"></label>
-      <label class="campo">Admissão<input type="text" value="${cfg.admissao ? C.brDate(cfg.admissao) : ''}" placeholder="dd/mm/aaaa" inputmode="numeric" data-cfg="admissao"></label>
+      <label class="campo">Admissão<input type="date" value="${esc(cfg.admissao || '')}" max="${hojeStr()}" data-cfg="admissao" class="num"></label>
     </div>
   </section>
 
@@ -559,7 +624,7 @@ function telaCadastro() {
       </label>
       <div class="presets">${[3, 5, 8, 10].map((p) => `<button type="button" data-action="preset" data-p="${p}">+${p}%</button>`).join('')}</div>
       <div class="previa" data-out="previa">${previaReajuste()}</div>
-      <label class="campo">Vigência a partir de<input type="text" inputmode="numeric" placeholder="dd/mm/aaaa" value="${esc(F.vigencia)}" data-field="vigencia" class="num"></label>
+      <label class="campo">Vigência a partir de<input type="date" value="${esc(F.vigencia)}" data-field="vigencia" class="num"></label>
       <p class="msg erro" data-out="reaj-erro" role="alert"></p>
       <button type="submit" class="btn">Aplicar reajuste</button>
     </form>
@@ -570,6 +635,8 @@ function telaCadastro() {
   </section>
 
   ${secaoNuvem()}
+
+  ${secaoAdmin()}
 
   <section class="card s" aria-labelledby="s6">
     <h2 id="s6" class="sec-title">6 · Aparência</h2>
@@ -603,6 +670,42 @@ function previaReajuste() {
   return `<div><span style="color:var(--text-2)">Novo salário</span><span class="num" style="font-weight:600">${C.brl(r.novoSal)}</span></div>
     <div><span style="color:var(--text-2)">Novo valor hora</span><span class="num" style="font-weight:600">${C.brl(r.novoHora)}</span></div>
     <div><span style="color:var(--text-2)">Variação</span><span class="num ${cls}" style="font-weight:600">${(r.pct >= 0 ? '+' : '') + r.pct.toFixed(2).replace('.', ',')}%</span></div>`;
+}
+
+function secaoAdmin() {
+  const msg = S.adminMsg ? `<p class="msg ${S.adminMsg.ok ? 'ok' : 'erro'}" role="status">${esc(S.adminMsg.txt)}</p>` : '';
+  let corpo;
+  if (!S.cfg.adminHash) {
+    corpo = `<p class="dica" style="color:var(--muted)">Defina uma senha para liberar a alteração, inclusão e remoção de registros de ponto.</p>
+      <form data-form="definir-admin" style="display:flex;flex-direction:column;gap:12px" novalidate>
+        <div class="duas">
+          <label class="campo">Nova senha<input type="password" name="nova" autocomplete="new-password" minlength="4" required></label>
+          <label class="campo">Repetir senha<input type="password" name="repetir" autocomplete="new-password" minlength="4" required></label>
+        </div>
+        ${msg}
+        <button type="submit" class="btn peq">Definir senha</button>
+      </form>`;
+  } else if (!adminAtivo()) {
+    corpo = `<p class="dica" style="color:var(--muted)">Registros só podem ser alterados com a senha de administrador. Depois de desbloquear, edite os registros pelo Calendário.</p>${painelAdmin('cad')}`;
+  } else {
+    const total = S.registros.filter((r) => !r.removido).length;
+    corpo = `${painelAdmin('cad')}
+      <a class="btn sec peq" href="#/calendario">Alterar registros no Calendário</a>
+      <button type="button" class="btn sec peq" style="color:var(--err)" data-action="limpar-registros" ${total ? '' : 'disabled'}>${S.confirmarLimpeza ? `Confirmar: remover ${total} registro${total === 1 ? '' : 's'}` : 'Limpar todos os registros de teste'}</button>
+      <form data-form="trocar-admin" class="divisor-sec" style="gap:12px" novalidate>
+        <span style="font-size:13px;font-weight:600;color:var(--text-2)">Trocar senha de administrador</span>
+        <div class="duas">
+          <label class="campo">Nova senha<input type="password" name="nova" autocomplete="new-password" minlength="4" required></label>
+          <label class="campo">Repetir senha<input type="password" name="repetir" autocomplete="new-password" minlength="4" required></label>
+        </div>
+        ${msg}
+        <button type="submit" class="btn sec peq">Trocar senha</button>
+      </form>`;
+  }
+  return `<section class="card s" id="admin" aria-labelledby="s8">
+    <h2 id="s8" class="sec-title">8 · Administração</h2>
+    ${corpo}
+  </section>`;
 }
 
 function secaoNuvem() {
@@ -694,7 +797,27 @@ document.addEventListener('click', async (ev) => {
     case 'tema': definirTema(el.dataset.v); break;
     case 'atualizar-app': if (S.swEspera) { atualizando = true; S.swEspera.postMessage('skipWaiting'); } break;
     case 'cal-dia': S.calSel = el.dataset.dia; S.confirmarRemocao = null; render(); break;
+    case 'pedir-admin': S.pedirSenha = true; S.adminMsg = null; render(); document.querySelector('[data-form="admin"] input')?.focus(); break;
+    case 'cancelar-admin': S.pedirSenha = false; S.adminMsg = null; render(); break;
+    case 'bloquear-admin': bloquearAdmin(); render(); toast('Modo administrador bloqueado.'); break;
+    case 'editar-reg': if (adminAtivo()) { S.editando = el.dataset.id; S.confirmarRemocao = null; render(); document.querySelector('[data-form="editar"] input')?.focus(); } break;
+    case 'cancelar-edicao': S.editando = null; render(); break;
+    case 'limpar-registros': {
+      if (!adminAtivo()) break;
+      if (!S.confirmarLimpeza) { S.confirmarLimpeza = true; render(); break; }
+      S.confirmarLimpeza = false;
+      const ativos = S.registros.filter((r) => !r.removido);
+      const ts = agora().toISOString();
+      ativos.forEach((r) => Object.assign(r, { removido: true, atualizado_em: ts, sync: 'pendente' }));
+      await db.putMany('registros', ativos);
+      await sync.contarPendentes();
+      sync.sincronizar();
+      toast(`${ativos.length} registro${ativos.length === 1 ? '' : 's'} removido${ativos.length === 1 ? '' : 's'}.`);
+      render();
+      break;
+    }
     case 'remover-reg':
+      if (!adminAtivo()) break;
       if (S.confirmarRemocao === el.dataset.id) { S.confirmarRemocao = null; await removerRegistro(el.dataset.id); toast('Marcação removida.'); }
       else S.confirmarRemocao = el.dataset.id;
       render(); break;
@@ -735,7 +858,7 @@ document.addEventListener('input', (ev) => {
   if (f === 'fer-nome') S.form.nome = ev.target.value;
   if (f === 'fer-data') {
     S.form.data = ev.target.value;
-    const iso = C.fromBrDate(ev.target.value);
+    const iso = /^\d{4}-\d{2}-\d{2}$/.test(ev.target.value) ? ev.target.value : null;
     const out = document.querySelector('[data-out="dow"]');
     if (out) out.value = iso ? C.DIAS[C.parseYmd(iso).getDay()] : '—';
   }
@@ -747,7 +870,7 @@ document.addEventListener('change', async (ev) => {
   let v = ev.target.value;
   if (k === 'admissao') {
     if (v.trim() === '') v = '';
-    else { const iso = C.fromBrDate(v); if (!iso) { toast('Data de admissão inválida (use dd/mm/aaaa).'); return; } v = iso; }
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { toast('Escolha a data de admissão no calendário.'); return; }
   }
   if (k === 'semanalPJ') v = Math.min(70, Math.max(1, Number(v) || 40));
   if (k === 'entrada' && !/^\d{2}:\d{2}$/.test(v)) return;
@@ -761,7 +884,41 @@ document.addEventListener('submit', async (ev) => {
   const tipo = form.dataset.form;
   if (!tipo) return;
   ev.preventDefault();
+  if (tipo === 'admin') {
+    S.ocupado = true;
+    const ok = await conferirSenha(form.senha.value);
+    S.ocupado = false;
+    if (ok) { desbloquearAdmin(); toast(`Modo administrador liberado por ${ADMIN_MINUTOS} minutos.`); }
+    else { await new Promise((r) => setTimeout(r, 800)); S.adminMsg = { ok: false, txt: 'Senha incorreta.' }; }
+    render();
+    if (!ok) document.querySelector('[data-form="admin"] input')?.focus();
+    return;
+  }
+  if (tipo === 'definir-admin' || tipo === 'trocar-admin') {
+    if (tipo === 'trocar-admin' && !adminAtivo()) return;
+    const nova = form.nova.value, rep2 = form.repetir.value;
+    if (nova.length < 4) { S.adminMsg = { ok: false, txt: 'Use pelo menos 4 caracteres.' }; render(); return; }
+    if (nova !== rep2) { S.adminMsg = { ok: false, txt: 'As senhas não conferem.' }; render(); return; }
+    const h = await hashSenha(nova);
+    await salvarConfig({ adminHash: h.hash, adminSalt: h.salt });
+    desbloquearAdmin();
+    S.adminMsg = { ok: true, txt: tipo === 'definir-admin' ? 'Senha definida. Modo administrador liberado.' : 'Senha trocada.' };
+    render();
+    return;
+  }
+  if (tipo === 'editar') {
+    if (!adminAtivo() || !S.editando) return;
+    const hora = form.hora.value;
+    if (!hora) return;
+    await removerRegistro(S.editando);
+    await incluirManual(S.calSel, hora);
+    S.editando = null;
+    toast('Horário alterado.');
+    render();
+    return;
+  }
   if (tipo === 'manual') {
+    if (!adminAtivo()) return;
     const hora = form.hora.value;
     if (!hora) return;
     await incluirManual(S.calSel, hora);
@@ -772,9 +929,9 @@ document.addEventListener('submit', async (ev) => {
   } else if (tipo === 'reajuste') {
     const erro = document.querySelector('[data-out="reaj-erro"]');
     const r = calcReajuste();
-    const vig = C.fromBrDate(S.form.vigencia);
+    const vig = /^\d{4}-\d{2}-\d{2}$/.test(S.form.vigencia || '') ? S.form.vigencia : null;
     if (!(r.novoSal > 0)) { erro.textContent = 'Informe um valor maior que zero.'; return; }
-    if (!vig) { erro.textContent = 'Informe a vigência no formato dd/mm/aaaa.'; return; }
+    if (!vig) { erro.textContent = 'Escolha a data de vigência.'; return; }
     const historico = S.cfg.historico.filter((h) => h.vigencia !== vig).concat({
       vigencia: vig, salario: Math.round(r.novoSal * 100) / 100,
       motivo: S.form.modo === 'hora' ? 'Reajuste pelo valor hora' : 'Reajuste pelo salário'

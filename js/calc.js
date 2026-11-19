@@ -49,6 +49,8 @@ export const CONFIG_PADRAO = {
   intervalo: 60,
   historico: [{ vigencia: '2000-01-01', salario: 2500, motivo: 'Salário inicial' }],
   tema: 'auto',
+  adminHash: '',
+  adminSalt: '',
   atualizado_em: '1970-01-01T00:00:00.000Z'
 };
 

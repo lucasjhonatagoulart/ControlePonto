@@ -64,13 +64,16 @@ export async function contarPendentes() {
   return estado.pendentes;
 }
 
-async function http(path, { method = 'GET', body, token = true, prefer } = {}) {
+async function http(path, { method = 'GET', body, token = true, prefer, tentativa = 0 } = {}) {
   const headers = { apikey: conn.key, 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = 'Bearer ' + (await tokenValido());
+  if (token) headers.Authorization = 'Bearer ' + (await tokenValido(tentativa > 0));
   if (prefer) headers.Prefer = prefer;
   const res = await fetch(conn.url + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  // Token recusado: renova a sessão uma vez e tenta de novo, sem pedir login.
+  if (res.status === 401 && token && tentativa === 0) return http(path, { method, body, token, prefer, tentativa: 1 });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = { message: text }; }
   if (!res.ok) {
     const msg = (data && (data.msg || data.message || data.error_description || data.error)) || res.statusText;
     const err = new Error(msg);
@@ -93,11 +96,23 @@ async function guardarAuth(data) {
   emitir();
 }
 
-async function tokenValido() {
-  if (!auth) throw new Error('Entre na sua conta para sincronizar.');
-  if (Date.now() > auth.expires_at - 60000) {
-    const data = await http('/auth/v1/token?grant_type=refresh_token', { method: 'POST', token: false, body: { refresh_token: auth.refresh_token } });
-    await guardarAuth(data);
+let renovando = null;
+async function tokenValido(forcar = false) {
+  if (!auth) { const e = new Error('Entre na sua conta para sincronizar.'); e.sessaoInvalida = true; throw e; }
+  if (forcar || Date.now() > auth.expires_at - 60000) {
+    if (!renovando) {
+      renovando = (async () => {
+        try {
+          const data = await http('/auth/v1/token?grant_type=refresh_token', { method: 'POST', token: false, body: { refresh_token: auth.refresh_token } });
+          await guardarAuth(data);
+        } catch (e) {
+          // Só desconecta se o servidor recusar a sessão; falta de internet não derruba o login.
+          if (e.status === 400 || e.status === 401 || e.status === 403) e.sessaoInvalida = true;
+          throw e;
+        } finally { renovando = null; }
+      })();
+    }
+    await renovando;
   }
   return auth.access_token;
 }
@@ -211,11 +226,11 @@ export function sincronizar() {
       if ((a.mudou || b.mudou || cfgMudou) && hooks.aoReceber) await hooks.aoReceber();
       return true;
     } catch (e) {
-      estado.erro = e.status === 401 || e.status === 400 && /refresh/i.test(e.message)
+      estado.erro = e.sessaoInvalida
         ? 'Sessão expirada. Entre novamente em Cadastro › Nuvem.'
         : e instanceof TypeError ? 'Sem acesso à internet agora. Os registros continuam salvos no aparelho.'
         : navigator.onLine ? 'Falha ao sincronizar: ' + e.message : '';
-      if (e.status === 401) await sair();
+      if (e.sessaoInvalida) await sair();
       return false;
     } finally {
       estado.sincronizando = false;
