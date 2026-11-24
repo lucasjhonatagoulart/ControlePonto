@@ -1,6 +1,6 @@
 // Service worker: guarda o app no aparelho para abrir sem internet.
 // Ao publicar uma nova versão, aumente VERSION para os aparelhos baixarem a atualização.
-const VERSION = 'ponto-v1.1.1';
+const VERSION = 'ponto-v1.2.0';
 const SHELL = [
   './',
   './index.html',

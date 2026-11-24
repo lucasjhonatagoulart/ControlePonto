@@ -18,7 +18,7 @@ export const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho'
 /** Duração em minutos → "08:48" (sem sinal). */
 export const hm = (min) => { min = Math.max(0, Math.round(min)); return pad(Math.floor(min / 60)) + ':' + pad(min % 60); };
 /** Saldo em minutos → "+00:11" / "-00:03". */
-export const saldo = (min) => { min = Math.round(min); return (min < 0 ? '-' : '+') + hm(Math.abs(min)); };
+export const saldo = (min) => { min = Math.round(min); return (min < 0 ? '−' : '+') + hm(Math.abs(min)); };
 /** Duração curta → "8h48", "1h", "30min". */
 export const curto = (min) => (min < 60 ? `${min}min` : `${Math.floor(min / 60)}h${min % 60 ? pad(min % 60) : ''}`);
 export const horaDe = (iso) => { const d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };

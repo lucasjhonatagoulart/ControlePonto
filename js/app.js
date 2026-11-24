@@ -50,6 +50,9 @@ const ICON = {
   sol: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   cadeado: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   cadeadoAberto: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>',
+  espelho: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
+  raio: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
+  baixo: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   lua: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>'
 };
 
@@ -97,28 +100,20 @@ function diaInfo(date, mapa, agoraMs) {
   const fer = mapa[data] || [];
   const ehHoje = data === hojeStr();
   const t = C.trabalhado(marcas, agoraMs, ehHoje);
-  const esp = C.esperado(S.cfg, date, fer);
-  return { data, date, marcas, fer, ehHoje, trab: t.min, aberto: t.aberto, esp };
+  const oc = ocorrencia(data);
+  const esp = oc === 'atestado' ? 0 : C.esperado(S.cfg, date, fer);
+  const hoje = hojeStr();
+  const ini = inicioContagem();
+  const encerrada = marcas.length >= 4 && !t.aberto;
+  // Conta no saldo: dias desde o início da contagem até ontem; hoje só depois da saída final.
+  const conta = !!ini && data >= ini && (data < hoje || (ehHoje && encerrada));
+  const falta = conta && esp > 0 && !marcas.length && !oc;
+  const incompleto = !ehHoje && marcas.length % 2 === 1;
+  return { data, date, marcas, fer, ehHoje, trab: t.min, aberto: t.aberto, esp, oc, conta, falta, incompleto, futuro: data > hoje };
 }
 
-/** Banco de horas do mês: soma de (trabalhado − esperado) desde o primeiro registro. */
-function bancoDoMes(ref) {
-  const primeiro = S.registros.filter((r) => !r.removido).map((r) => r.data).sort()[0];
-  if (!primeiro) return 0;
-  const ini = C.ymd(new Date(ref.getFullYear(), ref.getMonth(), 1));
-  let inicio = primeiro > ini ? primeiro : ini;
-  if (S.cfg.admissao && S.cfg.admissao > inicio) inicio = S.cfg.admissao;
-  const mapa = feriadosMapa([ref.getFullYear()]);
-  const hoje = hojeStr();
-  let total = 0;
-  for (let d = C.parseYmd(inicio); C.ymd(d) <= hoje; d = C.addDays(d, 1)) {
-    const info = diaInfo(d, mapa, agora().getTime());
-    // Hoje só entra no saldo depois da saída final (jornada encerrada).
-    if (info.ehHoje && !(info.marcas.length >= 4 && !info.aberto)) continue;
-    total += info.trab - info.esp;
-  }
-  return total;
-}
+/** Banco de horas do mês (mesmo cálculo da tela Mês). */
+function bancoDoMes(ref) { return resumoMes(mesStrDe(ref)); }
 
 /* ---------- registrar ponto ---------- */
 async function registrar() {
@@ -209,7 +204,7 @@ function painelAdmin(contexto) {
     return `<div class="admin-ativo"><span>${ICON.cadeadoAberto} Modo administrador até ${C.fromMin(new Date(S.adminAte).getHours() * 60 + new Date(S.adminAte).getMinutes())}</span><button type="button" class="link-btn" data-action="bloquear-admin">Bloquear</button></div>`;
   }
   if (!S.cfg.adminHash) {
-    return contexto === 'cal'
+    return contexto !== 'cad'
       ? `<a class="btn sec peq" href="#/cadastro?s=admin">${ICON.cadeado} Definir senha de administrador</a>`
       : '';
   }
@@ -309,7 +304,8 @@ function telaInicio() {
     linhas += `<li class="${di.ehHoje ? 'hoje' : ''}"><div class="dia"><span class="w">${C.DIAS_CURTO[d.getDay()]}</span><span class="n num">${C.pad(d.getDate())}</span></div><div class="info">${corpo}</div><span class="tot num">${di.marcas.length ? C.hm(di.trab) : '—'}</span></li>`;
   }
   const fimSem = C.addDays(ini, 6);
-  const banco = bancoDoMes(now);
+  const rm = bancoDoMes(now);
+  const banco = rm.saldo;
   const primeiroNome = (cfg.nome || '').trim().split(/\s+/)[0];
 
   return `
@@ -325,6 +321,7 @@ function telaInicio() {
   </header>
   ${faixaAtualizacao()}
   ${faixaConexao()}
+  <div class="cols"><div class="col">
   <section class="card" aria-label="Registro de ponto">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
       <span class="pill ${status.c}"><span class="dot"></span>${status.t}</span>
@@ -341,13 +338,16 @@ function telaInicio() {
   <section class="resumo" aria-label="Resumo">
     <div><span class="l">Hoje</span><span class="v num">${C.hm(info.trab)}</span><span class="d">de ${C.hm(info.esp)}</span></div>
     <div><span class="l">Semana</span><span class="v num">${C.hm(semTrab)}</span><span class="d">de ${C.hm(semEsp)}${temFeriado ? ' *' : ''}</span></div>
-    <div><span class="l">Banco de horas</span><span class="v num ${banco > 0 ? 'pos' : banco < 0 ? 'neg' : ''}">${C.saldo(banco)}</span><span class="d">saldo do mês</span></div>
+    <a href="#/mes" class="resumo-link" aria-label="Banco de horas: ${C.saldo(banco)}. Abrir o mês"><span class="l">Banco de horas ›</span><span class="v num ${banco > 0 ? 'pos' : banco < 0 ? 'neg' : ''}">${C.saldo(banco)}</span><span class="d">ver o mês</span></a>
   </section>
+  ${rm.faltas ? `<a class="atalho-mes" href="#/mes"><span class="ic">${ICON.espelho}</span><span class="tx"><b>Mês de ${C.MESES[now.getMonth()]}</b><span class="neg">${rm.faltas} dia${rm.faltas === 1 ? '' : 's'} sem registro · saldo ${C.saldo(banco)}</span></span>${ICON.dir}</a>` : ''}
   ${temFeriado ? '<p class="nota">* Esta semana tem feriado em dia de trabalho — a carga semanal foi reduzida automaticamente.</p>' : ''}
+  </div><div class="col">
   <section class="bloco" aria-labelledby="sem">
     <div class="bloco-head"><h2 id="sem">Registros da semana</h2><span>${ini.getDate()} ${C.MESES[ini.getMonth()].slice(0, 3)} – ${fimSem.getDate()} ${C.MESES[fimSem.getMonth()].slice(0, 3)}</span></div>
     <ul class="lista">${linhas || '<li><span class="vazio">Nenhum dia de trabalho nesta semana.</span></li>'}</ul>
-  </section>`;
+  </section>
+  </div></div>`;
 }
 
 /* ---------- tela: calendário ---------- */
@@ -443,6 +443,7 @@ function telaCalendario() {
     <h1>Calendário</h1>
     <a class="btn peq" style="width:auto;padding:0 14px;gap:6px;height:44px" href="#/feriado?data=${sel}">${ICON.mais} Marcar feriado</a>
   </header>
+  <div class="cols"><div class="col">
   <section class="card" aria-label="${C.MESES[mes - 1]} de ${ano}" style="padding:16px 14px 18px;gap:12px">
     <div class="cal-head">
       <a class="nav-btn" href="#/calendario?m=${mStr(prev)}" aria-label="Mês anterior">${ICON.esq}</a>
@@ -453,11 +454,13 @@ function telaCalendario() {
     <div class="grade">${cels}</div>
   </section>
   <section class="legenda" aria-label="Legenda">${legenda}</section>
+  </div><div class="col">
   <section class="card s det" aria-label="Dia selecionado" style="gap:8px">${det}</section>
   <section class="bloco" aria-labelledby="fm">
     <div class="bloco-head"><h2 id="fm">Feriados do mês</h2></div>
     <ul class="lista">${listaFer || '<li><span class="vazio">Nenhum feriado neste mês.</span></li>'}</ul>
-  </section>`;
+  </section>
+  </div></div>`;
 }
 
 /* ---------- folha: marcar/editar feriado ---------- */
@@ -572,6 +575,7 @@ function telaCadastro() {
     <a href="#/" class="icon-btn" aria-label="Voltar para o início">${ICON.esq}</a>
     <h1>Cadastro e configurações</h1>
   </header>
+  <div class="cad-grid">
 
   <section class="card s" aria-labelledby="s1">
     <h2 id="s1" class="sec-title">1 · Colaborador</h2>
@@ -651,6 +655,7 @@ function telaCadastro() {
     <button type="button" class="btn sec peq" data-action="exportar">Exportar backup (JSON)</button>
     <p class="dica" style="color:var(--muted)">${S.registros.filter((r) => !r.removido).length} registros e ${S.feriados.filter((f) => !f.removido).length} feriados salvos neste aparelho.</p>
   </section>
+  </div>
   <div style="height:16px"></div>`;
 }
 
@@ -748,6 +753,401 @@ function secaoNuvem() {
   </section>`;
 }
 
+/* ---------- mês: cálculo ---------- */
+const ROT_OC = { falta: 'Falta', atestado: 'Atestado / abono', folga: 'Folga compensada' };
+const ocorrencia = (data) => (S.cfg.ocorrencias || {})[data] || null;
+
+/** Primeiro dia que conta para o saldo: a admissão ou, sem ela, o 1º dia do mês do primeiro registro. */
+function inicioContagem() {
+  if (S.cfg.admissao) return S.cfg.admissao;
+  const p = S.registros.filter((r) => !r.removido).map((r) => r.data).sort()[0];
+  return p ? p.slice(0, 7) + '-01' : null;
+}
+
+/** Horários padrão do dia: entrada, início e fim do intervalo, saída. */
+function horariosPadrao() {
+  const cfg = S.cfg;
+  const carga = C.cargaDiaria(cfg);
+  const entrada = C.toMin(cfg.entrada);
+  const iniInt = entrada + Math.floor(carga / 2 / 30) * 30;
+  return [entrada, iniInt, iniInt + Number(cfg.intervalo), entrada + carga + Number(cfg.intervalo)].map(C.fromMin);
+}
+
+function resumoPeriodo(ini, fim, mapa) {
+  const nowMs = agora().getTime();
+  let trab = 0, esp = 0, faltas = 0, incompletos = 0;
+  const dias = [];
+  for (let d = C.parseYmd(ini); C.ymd(d) <= fim; d = C.addDays(d, 1)) {
+    const di = diaInfo(d, mapa, nowMs);
+    dias.push(di);
+    if (di.conta) { trab += di.trab; esp += di.esp; }
+    if (di.falta) faltas++;
+    if (di.incompleto && di.conta) incompletos++;
+  }
+  return { trab, esp, saldo: trab - esp, faltas, incompletos, dias };
+}
+
+function resumoMes(mesStr) {
+  const [ano, mes] = mesStr.split('-').map(Number);
+  const ult = new Date(ano, mes, 0).getDate();
+  return resumoPeriodo(`${mesStr}-01`, `${mesStr}-${C.pad(ult)}`, feriadosMapa([ano]));
+}
+
+/* ---------- mês: lançamentos ---------- */
+function novoRegistroManual(data, hhmm, i, nowIso) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = C.parseYmd(data); d.setHours(h, m, 0, 0);
+  return {
+    id: uuid(), data, tipo: C.tipoPorOrdem(i), ts: d.toISOString(), ts_dispositivo: new Date().toISOString(),
+    offset_ms: sync.offsetAtual(), offline: !navigator.onLine, manual: true, removido: false,
+    criado_em: nowIso, atualizado_em: nowIso, sync: 'pendente'
+  };
+}
+
+/** Grava os horários de vários dias de uma vez. itens: [{ data, horas: ['08:00', ...], oc: null|'falta'|'atestado'|'folga' }] */
+async function lancarDias(itens) {
+  const nowIso = agora().toISOString();
+  const mudados = [];
+  const ocs = { ...(S.cfg.ocorrencias || {}) };
+  for (const { data, horas, oc } of itens) {
+    const atuais = marcasDoDia(data);
+    const iguais = atuais.length === horas.length && atuais.every((m, i) => C.horaDe(m.ts) === horas[i]);
+    if (!iguais) {
+      for (const m of atuais) { Object.assign(m, { removido: true, atualizado_em: nowIso, sync: 'pendente' }); mudados.push(m); }
+      horas.forEach((h, i) => { const r = novoRegistroManual(data, h, i, nowIso); S.registros.push(r); mudados.push(r); });
+    }
+    if (oc) ocs[data] = oc; else delete ocs[data];
+  }
+  if (mudados.length) await db.putMany('registros', mudados);
+  if (JSON.stringify(ocs) !== JSON.stringify(S.cfg.ocorrencias || {})) await salvarConfig({ ocorrencias: ocs });
+  else { await sync.contarPendentes(); sync.sincronizar(); }
+}
+
+async function preencherPadrao(datas) {
+  const p = horariosPadrao();
+  await lancarDias(datas.map((data) => ({ data, horas: p, oc: null })));
+}
+
+/* ---------- tela: mês ---------- */
+const mesDe = (s) => { const [a, m] = s.split('-').map(Number); return { a, m }; };
+const mesStrDe = (d) => `${d.getFullYear()}-${C.pad(d.getMonth() + 1)}`;
+const linkMes = (m, v, extra = '') => `#/mes?m=${m}&v=${v}${extra}`;
+const lancarHref = (data, v) => `#/lancar?data=${data}&v=${v}`;
+
+function rotuloSaldo(saldo) {
+  if (saldo < 0) return `Você está devendo <b class="num">${C.hm(-saldo)}</b> horas`;
+  if (saldo > 0) return `Você tem <b class="num">${C.hm(saldo)}</b> horas de crédito`;
+  return 'Saldo zerado';
+}
+
+function linhaDiaSimples(di, v) {
+  const d = di.date;
+  const dia = `<div class="dia"><span class="w">${C.DIAS_CURTO[d.getDay()]}</span><span class="n num">${C.pad(d.getDate())}</span></div>`;
+  const fds = !S.cfg.dias[d.getDay()];
+  if (!di.marcas.length && !di.fer.length && !di.oc && fds) return `<li class="compacto"><span class="num">${C.DIAS_CURTO[d.getDay()]} ${C.pad(d.getDate())}</span><span>Descanso</span></li>`;
+  let corpo = '', tot = '—', acao = '';
+  if (di.fer.length) corpo += `<span class="h">${esc(di.fer[0].nome)}</span>${tagFeriado(di.fer[0])}`;
+  if (di.oc) {
+    corpo += `<span class="h">${ROT_OC[di.oc]}</span><span class="s">${di.oc === 'atestado' ? 'Não conta como dívida' : 'Conta como dívida: −' + C.hm(di.esp)}</span>`;
+    acao = `<a class="mini-btn sec" href="${lancarHref(di.data, v)}">Editar</a>`;
+  } else if (di.marcas.length) {
+    const s = di.trab - di.esp;
+    const nota = di.ehHoje && !di.conta ? 'Hoje · em andamento' : di.incompleto ? 'Marcação ímpar — falta um horário' : 'Saldo ' + C.saldo(s);
+    corpo += `<span class="m num">${di.marcas.map((m) => C.horaDe(m.ts)).join(' · ')}</span><span class="s ${di.incompleto ? 'warn' : s < 0 && di.conta ? 'neg' : s > 0 && di.conta ? 'pos' : ''}">${nota}</span>`;
+    tot = C.hm(di.trab);
+    acao = `<a class="mini-btn sec" href="${lancarHref(di.data, v)}">Editar</a>`;
+  } else if (di.falta) {
+    corpo += `<span class="s neg" style="font-weight:600">Sem registro · −${C.hm(di.esp)}</span>`;
+    acao = `<a class="mini-btn" href="${lancarHref(di.data, v)}">${ICON.mais}Lançar</a>`;
+  } else if (!di.fer.length) {
+    corpo += `<span class="s">${di.futuro ? 'Previsto ' + C.hm(di.esp) : di.ehHoje ? 'Hoje · nenhum registro ainda' : 'Antes do início da contagem'}</span>`;
+  }
+  return `<li class="${di.ehHoje ? 'hoje' : ''} ${di.falta ? 'falta' : ''}">${dia}<div class="info">${corpo}</div><span class="tot num">${tot}</span>${acao}</li>`;
+}
+
+function vistaSemanas(r, mesStr, ini, fim) {
+  const semanas = [];
+  for (let ws = C.inicioSemana(C.parseYmd(ini)); C.ymd(ws) <= fim; ws = C.addDays(ws, 7)) {
+    const a = C.ymd(ws) < ini ? ini : C.ymd(ws);
+    const we = C.ymd(C.addDays(ws, 6));
+    const b = we > fim ? fim : we;
+    const dias = r.dias.filter((di) => di.data >= a && di.data <= b);
+    let trab = 0, esp = 0, faltas = 0, espTotal = 0;
+    dias.forEach((di) => { espTotal += di.esp; if (di.conta) { trab += di.trab; esp += di.esp; } if (di.falta) faltas++; });
+    // Pula pedaços de semana sem nada (ex.: só o domingo do dia 1).
+    if (!espTotal && !dias.some((d) => d.marcas.length || d.fer.length || d.oc)) continue;
+    semanas.push({ espTotal, id: C.ymd(ws), a, b, dias, trab, esp, saldo: trab - esp, faltas, temHoje: dias.some((d) => d.ehHoje), futura: a > hojeStr() });
+  }
+  if (S.semAberta !== '__nenhuma' && (!S.semAberta || !semanas.some((s) => s.id === S.semAberta))) {
+    S.semAberta = (semanas.find((s) => s.faltas) || semanas.find((s) => s.temHoje) || semanas[0]).id;
+  }
+  return semanas.map((s, i) => {
+    const aberta = s.id === S.semAberta;
+    const pct = s.esp ? Math.min(100, Math.round((s.trab / s.esp) * 100)) : 0;
+    const tag = s.faltas ? `<span class="chip-st neg">${s.faltas} sem registro</span>`
+      : s.futura ? '<span class="chip-st">Futura</span>'
+        : s.temHoje ? '<span class="chip-st info">Em andamento</span>'
+          : s.esp || s.trab ? '<span class="chip-st pos">Completa</span>' : '<span class="chip-st">Sem jornada</span>';
+    const rot = `${C.pad(C.parseYmd(s.a).getDate())} – ${C.pad(C.parseYmd(s.b).getDate())} ${C.MESES[C.parseYmd(s.b).getMonth()].slice(0, 3)}`;
+    const faltasDatas = s.dias.filter((d) => d.falta).map((d) => d.data).join(',');
+    const corpo = aberta ? `<ul class="lista-sem">${s.dias.map((di) => linhaDiaSimples(di, 'semanas')).join('')}</ul>
+      ${s.faltas ? `<button type="button" class="btn sec peq" data-action="preencher" data-datas="${faltasDatas}">${ICON.raio} Preencher semana com a jornada padrão</button>` : ''}` : '';
+    return `<section class="semana ${aberta ? 'aberta' : ''}">
+      <button type="button" class="sem-head" data-action="sem-toggle" data-w="${s.id}" aria-expanded="${aberta}">
+        <span class="sem-tit"><span><b>Semana ${i + 1}</b> <span class="muted">${rot}</span></span>${tag}</span>
+        <span class="sem-val"><span class="num ${s.saldo < 0 ? 'neg' : s.saldo > 0 ? 'pos' : ''}" style="font-size:16px;font-weight:600">${s.futura ? '—' : C.saldo(s.saldo)}</span><span class="num muted" style="font-size:11px">${s.futura ? 'previsto ' + C.hm(s.espTotal) : C.hm(s.trab) + ' de ' + C.hm(s.esp)}</span></span>
+        <span class="seta">${ICON.baixo}</span>
+      </button>
+      <div class="barra"><div style="width:${pct}%"></div></div>
+      ${corpo}
+    </section>`;
+  }).join('');
+}
+
+function vistaDias(r, mesStr) {
+  const f = S.q.f || 'todos';
+  const lista = r.dias.filter((di) => (f === 'faltas' ? di.falta : f === 'incompletos' ? di.incompleto && di.conta : true));
+  const chip = (t) => `<span class="num tchip">${t}</span>`;
+  const vazio = '<span class="num tchip vazio">--:--</span>';
+  const linhasMob = lista.map((di) => {
+    const d = di.date;
+    const fds = !S.cfg.dias[d.getDay()];
+    const dia = `<div class="dia"><span class="w">${C.DIAS_CURTO[d.getDay()]}</span><span class="n num">${C.pad(d.getDate())}</span></div>`;
+    if (di.fer.length && !di.marcas.length) return `<li>${dia}<div class="info"><span class="h">${esc(di.fer[0].nome)}</span>${tagFeriado(di.fer[0])}</div><span class="tot num muted">—</span></li>`;
+    if (fds && !di.marcas.length && !di.oc) return `<li class="compacto"><span class="num">${C.DIAS_CURTO[d.getDay()]} ${C.pad(d.getDate())}</span><span>Descanso semanal</span></li>`;
+    if (di.oc) return `<li>${dia}<div class="info"><span class="h">${ROT_OC[di.oc]}</span></div><a class="mini-btn sec" href="${lancarHref(di.data, 'dias')}">Editar</a></li>`;
+    const hs = di.marcas.slice(0, 4).map((m) => chip(C.horaDe(m.ts)));
+    while (hs.length < 4) hs.push(vazio);
+    const s = di.trab - di.esp;
+    const dir = di.falta ? `<div class="dir"><span class="num neg" style="font-weight:700;font-size:13px">−${C.hm(di.esp)}</span><a class="mini-btn" href="${lancarHref(di.data, 'dias')}">${ICON.mais}Lançar</a></div>`
+      : di.marcas.length ? `<div class="dir"><span class="num" style="font-weight:600">${di.ehHoje && !di.conta ? 'em curso' : C.hm(di.trab)}</span>${di.conta ? `<span class="num ${s < 0 ? 'neg' : s > 0 ? 'pos' : 'muted'}" style="font-size:12px;font-weight:600">${C.saldo(s)}</span>` : ''}<a class="link-mini" href="${lancarHref(di.data, 'dias')}">Editar</a></div>`
+        : `<div class="dir"><span class="num muted" style="font-size:12px">${di.futuro ? 'previsto' : '—'}</span></div>`;
+    return `<li class="${di.falta ? 'falta' : ''} ${di.ehHoje ? 'hoje' : ''}">${dia}<div class="grid4">${hs.join('')}</div>${dir}</li>`;
+  }).join('');
+  const tdn = (c, cls = '') => `<td class="num c ${cls}">${c}</td>`;
+  const linhasDesk = lista.map((di) => {
+    const d = di.date;
+    const fds = !S.cfg.dias[d.getDay()];
+    const ini = `<td class="num"><b>${C.pad(d.getDate())}/${C.pad(d.getMonth() + 1)}</b></td><td class="muted">${C.DIAS_CURTO[d.getDay()]}</td>`;
+    const cls = di.falta ? 'falta' : di.ehHoje ? 'hoje' : fds || di.fer.length ? 'fds' : '';
+    if (di.fer.length && !di.marcas.length) return `<tr class="${cls}">${ini}<td colspan="4"><span class="fer-inline"><span class="sw" style="background:${corDe(di.fer[0].tipo)}"></span>${esc(di.fer[0].nome)} · feriado ${(TIPOS_FERIADO[di.fer[0].tipo] || {}).nome.toLowerCase()}</span></td>${tdn('—', 'muted')}${tdn('—', 'muted')}${tdn('—', 'muted')}<td></td></tr>`;
+    if (fds && !di.marcas.length && !di.oc) return `<tr class="${cls}">${ini}<td colspan="4" class="muted">Descanso semanal</td>${tdn('—', 'muted')}${tdn('—', 'muted')}${tdn('—', 'muted')}<td></td></tr>`;
+    if (di.oc) return `<tr class="${cls}">${ini}<td colspan="4"><b>${ROT_OC[di.oc]}</b></td>${tdn('00:00', 'muted')}${tdn(C.hm(di.esp))}${tdn(di.esp ? '−' + C.hm(di.esp) : '+00:00', di.esp ? 'neg' : 'muted')}<td class="r"><a class="mini-btn sec" href="${lancarHref(di.data, 'dias')}">Editar</a></td></tr>`;
+    const hs = di.marcas.slice(0, 4).map((m) => tdn(`<b>${C.horaDe(m.ts)}</b>`));
+    while (hs.length < 4) hs.push(tdn('--:--', 'muted'));
+    const s = di.trab - di.esp;
+    const saldoTd = di.conta ? tdn(C.saldo(s), s < 0 ? 'neg' : s > 0 ? 'pos' : 'muted') : tdn('—', 'muted');
+    const acao = di.falta ? `<a class="mini-btn" href="${lancarHref(di.data, 'dias')}">${ICON.mais}Lançar</a>` : di.marcas.length ? `<a class="mini-btn sec" href="${lancarHref(di.data, 'dias')}">Editar</a>` : '';
+    return `<tr class="${cls}">${ini}${hs.join('')}${tdn(di.ehHoje && !di.conta && di.marcas.length ? 'em curso' : di.marcas.length ? C.hm(di.trab) : '—', di.marcas.length ? '' : 'muted')}${tdn(di.esp ? C.hm(di.esp) : '—', di.esp ? '' : 'muted')}${saldoTd}<td class="r">${acao}</td></tr>`;
+  }).join('');
+  const fl = (id, t) => `<a role="tab" aria-selected="${f === id}" class="fchip" href="${linkMes(mesStr, 'dias', id === 'todos' ? '' : '&f=' + id)}">${t}</a>`;
+  return `<div class="filtros" role="tablist" aria-label="Filtrar dias">${fl('todos', 'Todos')}${fl('faltas', `Sem registro (${r.faltas})`)}${fl('incompletos', `Incompletos (${r.incompletos})`)}</div>
+    <div class="so-mobile"><ul class="lista lista-dias">${linhasMob || '<li><span class="vazio">Nenhum dia neste filtro.</span></li>'}</ul></div>
+    <div class="so-desk card tabela-wrap"><table class="espelho">
+      <thead><tr><th class="l">Data</th><th class="l">Dia</th><th>Entrada</th><th>Saída int.</th><th>Volta</th><th>Saída</th><th>Trabalhado</th><th>Previsto</th><th>Saldo</th><th><span class="sr-only">Ações</span></th></tr></thead>
+      <tbody>${linhasDesk || '<tr><td colspan="10" class="muted" style="padding:16px">Nenhum dia neste filtro.</td></tr>'}</tbody>
+      <tfoot><tr><td colspan="6"><b>Total contado</b></td>${tdn(`<b>${C.hm(r.trab)}</b>`)}${tdn(`<b>${C.hm(r.esp)}</b>`)}${tdn(`<b>${C.saldo(r.saldo)}</b>`, r.saldo < 0 ? 'neg' : r.saldo > 0 ? 'pos' : '')}<td></td></tr></tfoot>
+    </table></div>`;
+}
+
+function vistaSaldo(r, mesStr) {
+  const { a: ano, m: mes } = mesDe(mesStr);
+  const primeiro = new Date(ano, mes - 1, 1);
+  const inicio = C.addDays(primeiro, -primeiro.getDay());
+  const ult = new Date(ano, mes, 0).getDate();
+  const semanas = Math.ceil((primeiro.getDay() + ult) / 7);
+  const porData = Object.fromEntries(r.dias.map((d) => [d.data, d]));
+  if (!S.mesSel || S.mesSel.slice(0, 7) !== mesStr) S.mesSel = (r.dias.find((d) => d.falta) || r.dias.find((d) => d.ehHoje) || r.dias[0]).data;
+  let cels = '';
+  for (let i = 0; i < semanas * 7; i++) {
+    const d = C.addDays(inicio, i);
+    const ds = C.ymd(d);
+    const di = porData[ds];
+    if (!di) { cels += `<span class="cs fora num">${d.getDate()}</span>`; continue; }
+    let cls = 'cs', sub = '', style = '';
+    if (di.fer.length && !di.marcas.length) { cls += ' fer'; style = ` style="background:${corDe(di.fer[0].tipo)}"`; sub = 'feriado'; }
+    else if (di.oc) { cls += di.oc === 'atestado' ? ' abono' : ' neg'; sub = di.oc === 'atestado' ? 'abono' : di.oc === 'folga' ? 'folga' : 'falta'; }
+    else if (di.falta) { cls += ' neg'; sub = '−' + Math.floor(di.esp / 60) + ':' + C.pad(di.esp % 60); }
+    else if (di.conta && (di.marcas.length || di.esp)) { const s = di.trab - di.esp; cls += s >= 0 ? ' pos' : ' warn'; sub = (s >= 0 ? '+' : '−') + Math.floor(Math.abs(s) / 60) + ':' + C.pad(Math.abs(s) % 60); }
+    else if (!S.cfg.dias[d.getDay()]) cls += ' fds';
+    else if (di.ehHoje) sub = 'hoje';
+    if (di.ehHoje) cls += ' hoje';
+    if (ds === S.mesSel) cls += ' sel';
+    cels += `<button type="button" class="${cls}"${style} data-action="mes-dia" data-dia="${ds}" aria-pressed="${ds === S.mesSel}" aria-label="${d.getDate()} de ${C.MESES[d.getMonth()]}${sub ? ', ' + sub : ''}"><span class="n num">${d.getDate()}</span><span class="sb num">${sub}</span></button>`;
+  }
+  const di = porData[S.mesSel];
+  const dS = di.date;
+  let det = `<span class="k">${C.DIAS[dS.getDay()]}, ${dS.getDate()} de ${C.MESES[dS.getMonth()]}</span>`;
+  if (di.fer.length) det += `<span class="t">${esc(di.fer[0].nome)}</span>${tagFeriado(di.fer[0])}`;
+  if (di.oc) det += `<span class="t">${ROT_OC[di.oc]}</span>`;
+  else if (di.falta) det += `<span class="t neg">Sem registro · −${C.hm(di.esp)}</span>`;
+  else if (di.marcas.length) det += `<span class="t">${di.marcas.map((m) => C.horaDe(m.ts)).join(' · ')}</span><span class="x">Trabalhado ${C.hm(di.trab)}${di.conta ? ' · saldo ' + C.saldo(di.trab - di.esp) : ''}</span>`;
+  else if (!di.fer.length) det += `<span class="t">${di.futuro ? 'Previsto ' + C.hm(di.esp) : 'Sem jornada prevista'}</span>`;
+  const podeLancar = !di.futuro;
+  det += podeLancar ? `<div class="duas">${di.falta ? `<button type="button" class="btn sec peq" data-action="preencher" data-datas="${di.data}">Jornada padrão</button>` : '<span></span>'}<a class="btn peq" href="${lancarHref(di.data, 'saldo')}">${di.marcas.length || di.oc ? 'Editar horários' : 'Lançar horários'}</a></div>` : '';
+  const leg = (c, t) => `<span><span class="sw" style="background:${c}"></span>${t}</span>`;
+  return `<div class="cols"><div class="col">
+    <section class="card s" aria-label="Calendário de saldo" style="gap:8px;padding:14px 12px">
+      <div class="semana-h" aria-hidden="true"><span>Dom</span><span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sáb</span></div>
+      <div class="grade-saldo">${cels}</div>
+    </section>
+    <section class="legenda" aria-label="Legenda">${leg('var(--ok-bg)', 'Completo / positivo')}${leg('var(--warn-bg)', 'Saldo negativo')}${leg('var(--err-bg)', 'Sem registro / falta')}${leg('#1D4ED8', 'Feriado')}</section>
+  </div><div class="col">
+    <section class="card s det" aria-label="Dia selecionado" style="gap:10px">${det}</section>
+  </div></div>`;
+}
+
+function telaMes() {
+  const hoje = hojeStr();
+  const mq = S.q.m || (S.q.data ? S.q.data.slice(0, 7) : '');
+  const mesStr = /^\d{4}-\d{2}$/.test(mq) ? mq : hoje.slice(0, 7);
+  const v = ['semanas', 'dias', 'saldo'].includes(S.q.v) ? S.q.v : 'semanas';
+  const { a: ano, m: mes } = mesDe(mesStr);
+  const ult = new Date(ano, mes, 0).getDate();
+  const ini = `${mesStr}-01`, fim = `${mesStr}-${C.pad(ult)}`;
+  const r = resumoPeriodo(ini, fim, feriadosMapa([ano]));
+  const prev = mesStrDe(new Date(ano, mes - 2, 1)), next = mesStrDe(new Date(ano, mes, 1));
+  const inicio = inicioContagem();
+  const atual = mesStr === hoje.slice(0, 7);
+  const ontem = C.addDays(C.parseYmd(hoje), -1);
+  const quando = atual ? `Saldo até ontem (${C.pad(ontem.getDate())}/${C.pad(ontem.getMonth() + 1)})` : mesStr < hoje.slice(0, 7) ? 'Saldo do mês' : 'Mês futuro';
+  const pct = r.esp ? Math.min(100, Math.round((r.trab / r.esp) * 100)) : 0;
+  const todasFaltas = r.dias.filter((d) => d.falta).map((d) => d.data);
+  const aviso = !inicio
+    ? `<a class="aviso-card" href="#/cadastro">Cadastre a <b>data de admissão</b> para o saldo contar desde o início do trabalho.</a>`
+    : !S.cfg.admissao ? `<a class="aviso-card" href="#/cadastro">Contando desde ${C.brDate(inicio)} (mês do primeiro registro). Defina a <b>data de admissão</b> em Cadastro para ajustar.</a>` : '';
+  const vbtn = (id, t) => `<a role="tab" aria-selected="${v === id}" href="${linkMes(mesStr, id)}">${t}</a>`;
+  const corpo = v === 'dias' ? vistaDias(r, mesStr) : v === 'saldo' ? vistaSaldo(r, mesStr) : `<div class="semanas">${vistaSemanas(r, mesStr, ini, fim)}</div>`;
+  return `
+  <header class="top">
+    <h1>Mês</h1>
+    <div class="mes-nav">
+      <a class="nav-btn" href="${linkMes(prev, v)}" aria-label="Mês anterior">${ICON.esq}</a>
+      <span class="display" style="text-transform:capitalize;font-weight:600;min-width:130px;text-align:center">${C.MESES[mes - 1]} ${ano}</span>
+      <a class="nav-btn" href="${linkMes(next, v)}" aria-label="Próximo mês">${ICON.dir}</a>
+    </div>
+  </header>
+  <div class="cols mes-topo"><div class="col">
+    <section class="card saldo-card" aria-label="Saldo do mês">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span class="muted" style="font-size:13px">${quando}</span>
+        <span class="num saldo-grande ${r.saldo < 0 ? 'neg' : r.saldo > 0 ? 'pos' : ''}">${C.saldo(r.saldo)}</span>
+        <span style="font-size:13px;color:var(--text-2)">${rotuloSaldo(r.saldo)}</span>
+      </div>
+      <div class="barra grossa"><div style="width:${pct}%"></div></div>
+      <div class="kpi3">
+        <div><span class="muted">Trabalhado</span><b class="num">${C.hm(r.trab)}</b></div>
+        <div><span class="muted">Previsto</span><b class="num">${C.hm(r.esp)}</b></div>
+        <div><span class="muted">Sem registro</span><b class="num ${r.faltas ? 'neg' : ''}">${r.faltas} dia${r.faltas === 1 ? '' : 's'}</b></div>
+      </div>
+    </section>
+  </div><div class="col acoes-mes">
+    ${aviso}
+    <div class="admin-mes">${painelAdmin('mes')}</div>
+    ${todasFaltas.length ? `<button type="button" class="btn peq" data-action="preencher" data-datas="${todasFaltas.join(',')}">${ICON.raio} Preencher ${todasFaltas.length} dia${todasFaltas.length === 1 ? '' : 's'} sem registro com a jornada padrão</button>
+    <p class="dica" style="color:var(--muted);margin:0">${horariosPadrao().join(' · ')}. Depois ajuste os dias diferentes ou marque falta / atestado.</p>` : r.esp ? '<p class="dica" style="margin:0">Nenhum dia sem registro neste mês.</p>' : ''}
+  </div></div>
+  <nav class="vistas" role="tablist" aria-label="Forma de visualizar">${vbtn('semanas', 'Semanas')}${vbtn('dias', 'Dia a dia')}${vbtn('saldo', 'Calendário de saldo')}</nav>
+  <div class="mes-corpo">${corpo}</div>`;
+}
+
+/* ---------- folha: lançar horários do dia ---------- */
+function folhaLancar() {
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(S.q.data || '') ? S.q.data : hojeStr();
+  const v = S.q.v || 'semanas';
+  const d = C.parseYmd(data);
+  const marcas = marcasDoDia(data);
+  if (S.form.lancarKey !== data) {
+    const hs = marcas.length ? marcas.slice(0, 4).map((m) => C.horaDe(m.ts)) : horariosPadrao();
+    while (hs.length < 4) hs.push('');
+    S.form = { lancarKey: data, tipo: ocorrencia(data) || 'trabalhado', h: hs, erro: '' };
+  }
+  const F = S.form;
+  const admin = adminAtivo();
+  const prevD = C.ymd(C.addDays(d, -1)), nextD = C.ymd(C.addDays(d, 1));
+  const futuro = data > hojeStr();
+  const tipos = [['trabalhado', 'Trabalhado'], ['falta', 'Falta'], ['atestado', 'Atestado / abono'], ['folga', 'Folga compensada']]
+    .map(([id, t]) => `<button type="button" class="chip pill-chip" role="radio" aria-checked="${F.tipo === id}" data-action="lanc-tipo" data-t="${id}">${t}</button>`).join('');
+  const rot = ['Entrada', 'Início do intervalo', 'Fim do intervalo', 'Saída'];
+  const campos = F.h.map((h, i) => `<label class="campo">${rot[i]}<input type="time" class="num grande" value="${h}" data-field="lh" data-i="${i}"></label>`).join('');
+  const desc = { falta: 'O dia conta como dívida da jornada prevista.', atestado: 'O dia não conta como dívida (abonado).', folga: 'Usa o banco de horas: conta como dívida da jornada prevista.' };
+  return `
+  <div class="folha-bg" data-action="fechar-folha-bg">
+    <section class="folha" role="dialog" aria-modal="true" aria-labelledby="ld">
+      <span class="alca" aria-hidden="true"></span>
+      <div class="cab">
+        <a class="icon-btn" style="background:var(--surface-2)" href="${lancarHref(prevD, v)}" aria-label="Dia anterior">${ICON.esq}</a>
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center"><span class="muted" style="font-size:12px">Lançar horários</span><h1 id="ld" class="display" style="font-size:19px">${C.DIAS[d.getDay()]}, ${d.getDate()} de ${C.MESES[d.getMonth()]}</h1></div>
+        <a class="icon-btn" style="background:var(--surface-2)" href="${lancarHref(nextD, v)}" aria-label="Próximo dia">${ICON.dir}</a>
+      </div>
+      ${admin ? '' : `<div class="admin-lanc">${painelAdmin('lanc')}</div>`}
+      ${futuro ? '<p class="msg erro" style="margin:0">Este dia ainda não chegou — lançamentos só para hoje ou dias anteriores.</p>' : ''}
+      <form data-form="lancar" style="display:flex;flex-direction:column;gap:14px" novalidate>
+        <div role="radiogroup" aria-label="Tipo do dia" class="tipos-dia">${tipos}</div>
+        ${F.tipo === 'trabalhado' ? `<div class="duas">${campos}</div>
+        <div style="display:flex;gap:6px">
+          <button type="button" class="btn sec peq" data-action="lanc-padrao">Jornada padrão</button>
+          <button type="button" class="btn sec peq" data-action="lanc-copiar">Copiar dia anterior</button>
+        </div>
+        <div class="linha-info"><span style="color:var(--text-2)">Total do dia</span><span class="num" style="font-weight:600" data-out="lanc-total">${totalLancamento()}</span></div>`
+    : `<p class="linha-info" style="margin:0">${desc[F.tipo]}</p>`}
+        <p class="msg erro" data-out="lanc-erro" role="alert">${esc(F.erro || '')}</p>
+        <div class="duas">
+          <button type="submit" name="acao" value="salvar" class="btn sec" ${admin && !futuro ? '' : 'disabled'}>Salvar</button>
+          <button type="submit" name="acao" value="proximo" class="btn" ${admin && !futuro ? '' : 'disabled'} style="line-height:1.2;padding:0 8px">Salvar e próximo sem registro</button>
+        </div>
+        ${(marcas.length || ocorrencia(data)) && admin ? '<button type="button" class="link-btn" data-action="lanc-limpar" style="align-self:center">Limpar este dia</button>' : ''}
+        <a class="link-btn" style="align-self:center;color:var(--muted);text-decoration:none" href="${linkMes(data.slice(0, 7), v)}">Voltar ao mês</a>
+      </form>
+    </section>
+  </div>`;
+}
+
+function totalLancamento() {
+  const hs = S.form.h.filter(Boolean).map(C.toMin);
+  let t = 0;
+  for (let i = 0; i + 1 < hs.length; i += 2) t += Math.max(0, hs[i + 1] - hs[i]);
+  const d = C.parseYmd(S.form.lancarKey);
+  const esp = C.esperado(S.cfg, d, feriadosMapa([d.getFullYear()])[S.form.lancarKey]);
+  return `${C.hm(t)} · saldo ${C.saldo(t - esp)}`;
+}
+
+function validarHoras(hs) {
+  if (hs.length < 2) return 'Informe pelo menos entrada e saída.';
+  if (hs.length % 2) return 'Os horários precisam formar pares (entrada/saída). Deixe vazio só o par do intervalo.';
+  for (let i = 1; i < hs.length; i++) if (C.toMin(hs[i]) <= C.toMin(hs[i - 1])) return 'Os horários precisam estar em ordem crescente.';
+  return '';
+}
+
+function proximaFalta(depoisDe) {
+  const mesStr = depoisDe.slice(0, 7);
+  const r = resumoMes(mesStr);
+  const faltas = r.dias.filter((d) => d.falta).map((d) => d.data);
+  return faltas.find((x) => x > depoisDe) || faltas[0] || null;
+}
+
+async function salvarLancamento(proximo) {
+  const F = S.form;
+  const data = F.lancarKey;
+  const v = S.q.v || 'semanas';
+  if (!adminAtivo()) return;
+  let horas = [];
+  if (F.tipo === 'trabalhado') {
+    horas = F.h.filter(Boolean);
+    const erro = validarHoras(horas);
+    if (erro) { F.erro = erro; document.querySelector('[data-out="lanc-erro"]').textContent = erro; return; }
+  }
+  await lancarDias([{ data, horas, oc: F.tipo === 'trabalhado' ? null : F.tipo }]);
+  const d = C.parseYmd(data);
+  toast(`${d.getDate()}/${C.pad(d.getMonth() + 1)} salvo.`);
+  if (proximo) {
+    const n = proximaFalta(data);
+    if (n) { location.hash = lancarHref(n, v); return; }
+    toast('Nenhum outro dia sem registro neste mês.');
+  }
+  location.hash = linkMes(data.slice(0, 7), v);
+}
+
 /* ---------- roteamento e render ---------- */
 function lerRota() {
   let h = location.hash.replace(/^#/, '') || '/';
@@ -762,6 +1162,8 @@ function render() {
   let html;
   let aba = 'inicio';
   if (S.rota === '/calendario') { html = telaCalendario(); aba = 'calendario'; }
+  else if (S.rota === '/mes') { html = telaMes(); aba = 'mes'; }
+  else if (S.rota === '/lancar') { html = telaMes() + folhaLancar(); aba = 'mes'; }
   else if (S.rota === '/feriado') { html = telaCalendario() + folhaFeriado(); aba = 'calendario'; }
   else if (S.rota === '/cadastro') { html = telaCadastro(); aba = 'cadastro'; }
   else html = telaInicio();
@@ -774,8 +1176,10 @@ function render() {
 let ultimaRota = '';
 window.addEventListener('hashchange', () => {
   lerRota();
-  if (S.rota !== '/feriado') S.form = {};
-  if (S.rota !== ultimaRota && !(S.rota === '/feriado' || ultimaRota === '/feriado')) window.scrollTo(0, 0);
+  const folhas = ['/feriado', '/lancar'];
+  if (!folhas.includes(S.rota)) S.form = {};
+  const mesmaTela = (S.rota === ultimaRota) || (folhas.includes(S.rota) || folhas.includes(ultimaRota));
+  if (!mesmaTela) window.scrollTo(0, 0);
   ultimaRota = S.rota;
   S.confirmarRemocao = null;
   S.nuvemMsg = null;
@@ -784,8 +1188,11 @@ window.addEventListener('hashchange', () => {
 });
 
 /* ---------- eventos ---------- */
-const fecharFolha = () => { location.hash = '#/calendario?m=' + (S.q.data || hojeStr()).slice(0, 7); };
-document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && S.rota === '/feriado') fecharFolha(); });
+const fecharFolha = () => {
+  if (S.rota === '/lancar') { location.hash = linkMes((S.q.data || hojeStr()).slice(0, 7), S.q.v || 'semanas'); return; }
+  location.hash = '#/calendario?m=' + (S.q.data || hojeStr()).slice(0, 7);
+};
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && (S.rota === '/feriado' || S.rota === '/lancar')) fecharFolha(); });
 document.addEventListener('click', async (ev) => {
   const el = ev.target.closest('[data-action]');
   if (!el) return;
@@ -797,6 +1204,33 @@ document.addEventListener('click', async (ev) => {
     case 'alternar-tema': definirTema(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); break;
     case 'tema': definirTema(el.dataset.v); break;
     case 'atualizar-app': if (S.swEspera) { atualizando = true; S.swEspera.postMessage('skipWaiting'); } break;
+    case 'sem-toggle': S.semAberta = S.semAberta === el.dataset.w ? '__nenhuma' : el.dataset.w; render(); break;
+    case 'mes-dia': S.mesSel = el.dataset.dia; render(); break;
+    case 'preencher': {
+      if (!adminAtivo()) { S.pedirSenha = true; S.adminMsg = { ok: false, txt: 'Desbloqueie o modo administrador para lançar horários.' }; render(); document.querySelector('[data-form="admin"] input')?.focus(); break; }
+      const datas = el.dataset.datas.split(',').filter(Boolean);
+      await preencherPadrao(datas);
+      toast(`${datas.length} dia${datas.length === 1 ? '' : 's'} preenchido${datas.length === 1 ? '' : 's'} com a jornada padrão.`);
+      render();
+      break;
+    }
+    case 'lanc-tipo': S.form.tipo = el.dataset.t; S.form.erro = ''; render(); break;
+    case 'lanc-padrao': S.form.h = horariosPadrao(); S.form.erro = ''; render(); break;
+    case 'lanc-copiar': {
+      let d = C.parseYmd(S.form.lancarKey);
+      let achou = null;
+      for (let k = 0; k < 31 && !achou; k++) { d = C.addDays(d, -1); const m = marcasDoDia(C.ymd(d)); if (m.length >= 2) achou = m; }
+      if (!achou) { toast('Nenhum dia anterior com horários.'); break; }
+      const hs = achou.slice(0, 4).map((m) => C.horaDe(m.ts)); while (hs.length < 4) hs.push('');
+      S.form.h = hs; S.form.erro = ''; render(); break;
+    }
+    case 'lanc-limpar':
+      if (!adminAtivo()) break;
+      await lancarDias([{ data: S.form.lancarKey, horas: [], oc: null }]);
+      toast('Dia limpo.');
+      S.form = {};
+      render();
+      break;
     case 'cal-dia': S.calSel = el.dataset.dia; S.confirmarRemocao = null; render(); break;
     case 'pedir-admin': S.pedirSenha = true; S.adminMsg = null; render(); document.querySelector('[data-form="admin"] input')?.focus(); break;
     case 'cancelar-admin': S.pedirSenha = false; S.adminMsg = null; render(); break;
@@ -856,6 +1290,11 @@ document.addEventListener('input', (ev) => {
   if (!f) return;
   if (f === 'valor') { S.form.valor = ev.target.value; document.querySelector('[data-out="previa"]').innerHTML = previaReajuste(); }
   if (f === 'vigencia') S.form.vigencia = ev.target.value;
+  if (f === 'lh') {
+    S.form.h[+ev.target.dataset.i] = ev.target.value;
+    const out = document.querySelector('[data-out="lanc-total"]');
+    if (out) out.textContent = totalLancamento();
+  }
   if (f === 'fer-nome') S.form.nome = ev.target.value;
   if (f === 'fer-data') {
     S.form.data = ev.target.value;
@@ -885,6 +1324,10 @@ document.addEventListener('submit', async (ev) => {
   const tipo = form.dataset.form;
   if (!tipo) return;
   ev.preventDefault();
+  if (tipo === 'lancar') {
+    await salvarLancamento(ev.submitter && ev.submitter.value === 'proximo');
+    return;
+  }
   if (tipo === 'admin') {
     S.ocupado = true;
     const ok = await conferirSenha(form.senha.value);
